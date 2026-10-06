@@ -10,14 +10,15 @@ class ApiService {
   static const String usbUrl = "http://127.0.0.1:8000/api";
   static const String wifiUrl = "http://192.168.100.98:8000/api";
   static const String emulatorUrl = "http://10.0.2.2:8000/api";
+  static const String cloudUrl = "https://palengke-plus-api.onrender.com/api";
 
-  static String activeBaseUrl = wifiUrl;
+  static String activeBaseUrl = cloudUrl;
   static const String _baseUrlKey = 'api_base_url';
   static const String _cacheVersion = 'v2';
 
   static Future<void> initialize() async {
     final preferences = await SharedPreferences.getInstance();
-    activeBaseUrl = preferences.getString(_baseUrlKey) ?? wifiUrl;
+    activeBaseUrl = preferences.getString(_baseUrlKey) ?? cloudUrl;
   }
 
   static Future<void> setActiveBaseUrl(String url) async {
