@@ -14,20 +14,30 @@ class ApiService {
 
   static String activeBaseUrl = cloudUrl;
   static const String _baseUrlKey = 'api_base_url';
-  static const String _cacheVersion = 'v3'; // bumped to drop Sept stale cache
-  static const String _migratedKey = 'v3_migrated_cloud';
+  static const String _cacheVersion = 'v4'; // bust Sept cache, 30s cold-start
+  static const String _migratedKey = 'v4_migrated_cloud';
 
   static Future<void> initialize() async {
     final preferences = await SharedPreferences.getInstance();
-    // one-time: migrate old wifi/usb prefs to cloud
     if (preferences.getBool(_migratedKey) != true) {
       final old = preferences.getString(_baseUrlKey);
-      if (old != null && (old.contains('192.168.') || old.contains('127.0.0.1') || old.contains('10.0.2.2'))) {
+      if (old == null || old.contains('192.168.') || old.contains('127.0.0.1') || old.contains('10.0.2.2') || old.isEmpty) {
         await preferences.setString(_baseUrlKey, cloudUrl);
+      }
+      // drop old Sept caches
+      for (final k in ['v2_commodities_cache','v2_analytics_cache','v3_commodities_cache','v3_analytics_cache']) {
+        await preferences.remove(k); await preferences.remove('${k}_saved_at');
       }
       await preferences.setBool(_migratedKey, true);
     }
-    activeBaseUrl = preferences.getString(_baseUrlKey) ?? cloudUrl;
+    final saved = preferences.getString(_baseUrlKey);
+    // force cloud if stale local IP survived
+    if (saved == null || saved.contains('192.168.') || saved.contains('127.0.0.1') || saved.contains('10.0.2.2')) {
+      activeBaseUrl = cloudUrl;
+      await preferences.setString(_baseUrlKey, cloudUrl);
+    } else {
+      activeBaseUrl = saved;
+    }
   }
 
   static Future<void> setActiveBaseUrl(String url) async {
@@ -78,7 +88,7 @@ class ApiService {
       request: () async {
         final response = await http
             .get(Uri.parse('$baseUrl/commodities'))
-            .timeout(const Duration(seconds: 8));
+            .timeout(const Duration(seconds: 30));
         if (response.statusCode != 200) {
           throw Exception(
             'Failed to load commodities (status: ${response.statusCode})',
@@ -96,7 +106,7 @@ class ApiService {
       request: () async {
         final response = await http
             .get(Uri.parse('$baseUrl/analytics'))
-            .timeout(const Duration(seconds: 8));
+            .timeout(const Duration(seconds: 30));
         if (response.statusCode != 200) {
           throw Exception(
             'Failed to load market analytics (status: ${response.statusCode})',
@@ -110,7 +120,7 @@ class ApiService {
   Future<List<dynamic>> fetchHistory(String commodity, {int days = 30}) async {
     final encoded = Uri.encodeComponent(commodity);
     final uri = Uri.parse('$baseUrl/prices/$encoded?days=$days');
-    final response = await http.get(uri).timeout(const Duration(seconds: 8));
+    final response = await http.get(uri).timeout(const Duration(seconds: 30));
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       return data['history'] as List<dynamic>;
@@ -132,7 +142,7 @@ class ApiService {
       request: () async {
         final response = await http
             .get(Uri.parse('$baseUrl/forecast/$encoded?horizon=$horizon'))
-            .timeout(const Duration(seconds: 15));
+            .timeout(const Duration(seconds: 30));
         if (response.statusCode != 200) {
           throw Exception(
             'Failed to load forecast for $commodity (status: ${response.statusCode})',

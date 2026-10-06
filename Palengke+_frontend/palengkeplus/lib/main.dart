@@ -210,21 +210,24 @@ class _ShellState extends State<Shell> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Server connection'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _serverOption(dialogContext, 'USB / desktop', ApiService.usbUrl),
-            _serverOption(dialogContext, 'Wi-Fi phone', ApiService.wifiUrl),
-            _serverOption(
-              dialogContext,
-              'Android emulator',
-              ApiService.emulatorUrl,
-            ),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(labelText: 'Custom API URL'),
-            ),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _serverOption(dialogContext, '☁️ Cloud (Render)', ApiService.cloudUrl, isCloud: true),
+              const Divider(),
+              _serverOption(dialogContext, 'USB / desktop', ApiService.usbUrl),
+              _serverOption(dialogContext, 'Wi-Fi phone', ApiService.wifiUrl),
+              _serverOption(dialogContext, 'Android emulator', ApiService.emulatorUrl),
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(labelText: 'Custom API URL', hintText: 'https://.../api'),
+              ),
+              const SizedBox(height: 8),
+              Text('Active: ${ApiService.activeBaseUrl}', style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -247,12 +250,12 @@ class _ShellState extends State<Shell> {
     );
   }
 
-  Widget _serverOption(BuildContext context, String label, String url) =>
+  Widget _serverOption(BuildContext context, String label, String url, {bool isCloud = false}) =>
       ListTile(
         dense: true,
         contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.dns_outlined, color: navy),
-        title: Text(label),
+        leading: Icon(isCloud ? Icons.cloud_done_outlined : Icons.dns_outlined, color: isCloud ? green : navy),
+        title: Text(label, style: TextStyle(fontWeight: isCloud ? FontWeight.bold : FontWeight.normal)),
         subtitle: Text(url, style: const TextStyle(fontSize: 11)),
         onTap: () async {
           await ApiService.setActiveBaseUrl(url);
