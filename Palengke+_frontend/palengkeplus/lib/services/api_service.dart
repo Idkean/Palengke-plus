@@ -14,10 +14,19 @@ class ApiService {
 
   static String activeBaseUrl = cloudUrl;
   static const String _baseUrlKey = 'api_base_url';
-  static const String _cacheVersion = 'v2';
+  static const String _cacheVersion = 'v3'; // bumped to drop Sept stale cache
+  static const String _migratedKey = 'v3_migrated_cloud';
 
   static Future<void> initialize() async {
     final preferences = await SharedPreferences.getInstance();
+    // one-time: migrate old wifi/usb prefs to cloud
+    if (preferences.getBool(_migratedKey) != true) {
+      final old = preferences.getString(_baseUrlKey);
+      if (old != null && (old.contains('192.168.') || old.contains('127.0.0.1') || old.contains('10.0.2.2'))) {
+        await preferences.setString(_baseUrlKey, cloudUrl);
+      }
+      await preferences.setBool(_migratedKey, true);
+    }
     activeBaseUrl = preferences.getString(_baseUrlKey) ?? cloudUrl;
   }
 
