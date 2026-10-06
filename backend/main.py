@@ -5,6 +5,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+import time as _time
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import DB_PATH, init_db
 from forecaster import generate_arima_forecast, get_commodity_series
 from sync_da_prices import sync as sync_da_prices
+_FORECAST_CACHE: dict[tuple, tuple] = {}  # (commodity,horizon) -> (ts, result)
+_FORECAST_TTL = 6 * 60 * 60
 
 logger = logging.getLogger(__name__)
 DA_SYNC_INTERVAL_SECONDS = int(os.getenv("DA_SYNC_INTERVAL_SECONDS", str(6 * 60 * 60)))
@@ -24,6 +28,7 @@ allow_creds = False if cors_origins == ["*"] else True
 
 
 async def da_sync_loop():
+    await asyncio.sleep(90)  # ponytail: let first requests serve before heavy PDF sync
     while True:
         try:
             imported = await asyncio.to_thread(sync_da_prices)
@@ -192,9 +197,15 @@ def get_historical_prices(commodity: str, days: int = Query(30, ge=7, le=365)):
 
 @app.get("/api/forecast/{commodity}")
 def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30)):
-    """Generates ARIMA forecasts and confidence intervals for the requested horizon."""
+    """Generates ARIMA forecasts and confidence intervals. ponytail: 6h cache."""
+    key = (commodity.lower().strip(), horizon)
+    cached = _FORECAST_CACHE.get(key)
+    if cached and _time.time() - cached[0] < _FORECAST_TTL:
+        return cached[1]
     try:
-        return generate_arima_forecast(commodity, horizon_days=horizon)
+        result = generate_arima_forecast(commodity, horizon_days=horizon)
+        _FORECAST_CACHE[key] = (_time.time(), result)
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

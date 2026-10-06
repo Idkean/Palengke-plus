@@ -787,36 +787,36 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
     dashboardFuture = _loadDashboard();
   }
 
+  // ponytail: show analytics even if forecast hangs on free tier
   Future<Map<String, dynamic>> _loadDashboard() async {
     final results = await Future.wait<dynamic>([
-      widget.api.fetchCommodities(),
-      widget.api.fetchAnalytics(),
+      widget.api.fetchCommodities().catchError((e) => throw e),
+      widget.api.fetchAnalytics().catchError((e) => throw e),
     ]);
     final commodities = results[0] as List<dynamic>;
     final analytics = results[1] as Map<String, dynamic>;
     if (commodities.isEmpty) {
-      return {
-        'commodities': commodities,
-        'analytics': analytics,
-        'history': <dynamic>[],
-        'forecast': <String, dynamic>{},
-      };
+      return {'commodities': commodities, 'analytics': analytics, 'history': <dynamic>[], 'forecast': <String, dynamic>{}, 'forecastError': null};
     }
     final selected = commodities.firstWhere(
       (item) => item['name'].toString() == selectedCommodity,
       orElse: () => commodities.first,
     );
     selectedCommodity = selected['name'].toString();
-    final details = await Future.wait<dynamic>([
-      widget.api.fetchHistory(selectedCommodity!, days: 30),
-      widget.api.fetchForecast(selectedCommodity!),
-    ]);
-    return {
-      'commodities': commodities,
-      'analytics': analytics,
-      'history': details[0] as List<dynamic>,
-      'forecast': details[1] as Map<String, dynamic>,
-    };
+    List<dynamic> history = [];
+    Map<String, dynamic> forecast = {};
+    String? forecastErr;
+    try {
+      history = await widget.api.fetchHistory(selectedCommodity!, days: 30).timeout(const Duration(seconds: 35));
+    } catch (e) {
+      history = [];
+    }
+    try {
+      forecast = await widget.api.fetchForecast(selectedCommodity!).timeout(const Duration(seconds: 62));
+    } catch (e) {
+      forecastErr = e.toString().replaceAll(RegExp(r'^Exception:\s*'), '');
+    }
+    return {'commodities': commodities, 'analytics': analytics, 'history': history, 'forecast': forecast, 'forecastError': forecastErr};
   }
 
   void _refresh() => setState(() => dashboardFuture = _loadDashboard());
@@ -847,6 +847,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
         final analytics = data['analytics'] as Map<String, dynamic>;
         final history = data['history'] as List<dynamic>;
         final forecastData = data['forecast'] as Map<String, dynamic>;
+        final forecastErr = data['forecastError'] as String?;
         final forecasts = (forecastData['forecast'] as List<dynamic>?) ?? [];
         final quality = forecastData['quality'] as Map<dynamic, dynamic>? ?? {};
         final selected = commodities.firstWhere(
@@ -1079,6 +1080,13 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
                   setState(() => showForecast = value.first),
             ),
             const SizedBox(height: 10),
+            if (forecastErr != null && showForecast)
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFFFCC80))),
+                child: Row(children: [const Icon(Icons.info_outline, size: 18), const SizedBox(width: 8), Expanded(child: Text('Forecast loading slow on free server (cold start). History & alerts ok. Tap refresh. $forecastErr', style: const TextStyle(fontSize: 11)))])
+              ),
+            if (forecastErr != null && showForecast) const SizedBox(height: 10),
             Container(
               height: 220,
               padding: const EdgeInsets.fromLTRB(10, 14, 14, 10),
