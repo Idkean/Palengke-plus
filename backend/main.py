@@ -78,6 +78,22 @@ def health_check():
         "latest_price_date": latest_date,
     }
 
+
+@app.api_route("/api/admin/sync", methods=["GET", "POST"])
+async def trigger_sync():
+    """Manually triggers DA sync (real PDFs) and returns new counts. ponytail: ephemeral SQLite — move to Postgres when need persistence."""
+    try:
+        imported = await asyncio.to_thread(sync_da_prices)
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            row = conn.execute("SELECT COUNT(*), MAX(date) FROM prices").fetchone()
+        finally:
+            conn.close()
+        return {"imported": imported, "price_records": row[0], "latest_price_date": row[1], "source": "DA-4A live PDFs"}
+    except Exception as e:
+        logger.exception("Manual sync failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/commodities")
 def list_commodities():
     """Lists commodities with category, latest price, and daily movement."""
