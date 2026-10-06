@@ -37,6 +37,17 @@ backend/calamba_prices.db
 *.db-journal
 *.sqlite3-journal
 
+# SQA / school activity - not part of deploy
+activity_evidence/
+activity_report_generator.py
+caption_evidence.py
+generate_sqa_pdf.py
+vscode_style_evidence.py
+extract_doc.py
+Palengke+_Defect_Prevention_Activity.pdf
+Palengke+_SQA_Review.pdf
+ActivityMidterm*.docx
+
 # Videos / large binaries - don't deploy
 *.mp4
 *.mov
