@@ -1,0 +1,47 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+calamba_prices.db
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+.pub-cache/
+.pub/
+*.lock
+# keep pubspec.lock for Flutter - comment out if you want it
+# pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# DB
+backend/calamba_prices.db
+*.db-journal
+*.sqlite3-journal
+
+# Videos / large binaries - don't deploy
+*.mp4
+*.mov
+*.avi
+*.zip
+
+# Logs / temp
+*.log
