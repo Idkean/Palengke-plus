@@ -142,7 +142,7 @@ class ApiService {
       request: () async {
         final response = await http
             .get(Uri.parse('$baseUrl/forecast/$encoded?horizon=$horizon'))
-            .timeout(const Duration(seconds: 30));
+            .timeout(const Duration(seconds: 60));
         if (response.statusCode != 200) {
           throw Exception(
             'Failed to load forecast for $commodity (status: ${response.statusCode})',
