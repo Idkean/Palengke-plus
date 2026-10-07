@@ -27,12 +27,42 @@ else:
 allow_creds = False if cors_origins == ["*"] else True
 
 
-async def da_sync_loop():
-    await asyncio.sleep(90)  # ponytail: let first requests serve before heavy PDF sync
+async def _prewarm_forecast_cache(done: asyncio.Event):
+    # ponytail: warm cache off-request so first user hits instant; stdlib only
+    await asyncio.sleep(12)  # let first health/commodities serve before CPU work
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            rows = conn.execute("SELECT DISTINCT commodity FROM prices").fetchall()
+        finally:
+            conn.close()
+        commodities = [r[0] for r in rows]
+        for name in commodities:
+            key = (name.lower().strip(), 7)
+            if key in _FORECAST_CACHE and _time.time() - _FORECAST_CACHE[key][0] < _FORECAST_TTL:
+                continue
+            try:
+                result = await asyncio.to_thread(generate_arima_forecast, name, horizon_days=7)
+                _FORECAST_CACHE[key] = (_time.time(), result)
+                logger.info("prewarm cached %s", name)
+            except Exception:
+                logger.exception("prewarm failed for %s", name)
+            await asyncio.sleep(0.3)  # yield so requests not starved
+    except Exception:
+        logger.exception("prewarm loop failed")
+    finally:
+        done.set()
+
+async def da_sync_loop(prewarm_done: asyncio.Event):
+    await prewarm_done.wait()  # ponytail: never run heavy 40-PDF sync before forecast cache ready
+    await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)  # first sync after 6h, not at startup
     while True:
         try:
             imported = await asyncio.to_thread(sync_da_prices)
             logger.info("DA background sync imported %s observations", imported)
+            # refresh forecast cache after new data
+            prewarm_done.clear()
+            await _prewarm_forecast_cache(prewarm_done)
         except Exception:
             logger.exception("DA background sync failed; keeping the last valid database")
         await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)
@@ -41,13 +71,16 @@ async def da_sync_loop():
 @asynccontextmanager
 async def lifespan(app):
     init_db()
-    sync_task = asyncio.create_task(da_sync_loop())
+    prewarm_done = asyncio.Event()
+    prewarm_task = asyncio.create_task(_prewarm_forecast_cache(prewarm_done))
+    sync_task = asyncio.create_task(da_sync_loop(prewarm_done))
     try:
         yield
     finally:
-        sync_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await sync_task
+        for task in (prewarm_task, sync_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 app = FastAPI(
     title="Palengke+ API (Calamba City)",
