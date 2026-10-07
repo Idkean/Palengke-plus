@@ -53,9 +53,39 @@ async def _prewarm_forecast_cache(done: asyncio.Event):
     finally:
         done.set()
 
+async def _maybe_sync_now() -> int:
+    # ponytail: eager sync if DB empty or latest < today (fixes "yesterday" stale)
+    try:
+        from datetime import date as _date
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cnt, latest = conn.execute("SELECT COUNT(*), MAX(date) FROM prices").fetchone()
+        finally:
+            conn.close()
+        today = _date.today().isoformat()
+        stale = cnt == 0 or (latest is not None and latest < today)
+        if not stale:
+            return 0
+        logger.info("DB stale (cnt=%s latest=%s today=%s) -> eager DA sync", cnt, latest, today)
+        return await asyncio.to_thread(sync_da_prices)
+    except Exception:
+        logger.exception("eager sync check failed")
+        return 0
+
 async def da_sync_loop(prewarm_done: asyncio.Event):
     await prewarm_done.wait()  # ponytail: never run heavy 40-PDF sync before forecast cache ready
-    await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)  # first sync after 6h, not at startup
+    # ponytail: sync eagerly if yesterday-stale, else wait interval
+    try:
+        imported = await asyncio.wait_for(_maybe_sync_now(), timeout=90)
+        if imported:
+            logger.info("eager DA sync imported %s observations", imported)
+            prewarm_done.clear()
+            await _prewarm_forecast_cache(prewarm_done)
+        else:
+            await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("eager DA sync timed out on 0.1 CPU, defer to next interval")
+        await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)
     while True:
         try:
             imported = await asyncio.to_thread(sync_da_prices)

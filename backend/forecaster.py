@@ -164,23 +164,28 @@ def generate_arima_forecast(commodity: str, horizon_days: int = 7) -> dict:
     validation = evaluate_holdout(series, horizon_days)
     baseline_comparison = evaluate_baselines(series, horizon_days)
 
-    # ponytail: hard budget on free tier — 4s wall, else baseline instant chart
-    import time as _t2
-    if _t2.time() > _deadline:
+    # ponytail: ARIMA.fit blocks past deadline check on 0.1 CPU, so hard-timeout it
+    import time as _t2, concurrent.futures as _cf
+    remain = _deadline - _t2.time()
+    if remain <= 0.2:
         base = generate_baseline_forecast(series, commodity, horizon_days)
         base["quality"]["fallback_reason"] = "free_tier_budget_pre"
         return base
+    def _fit():
+        m = ARIMA(series, order=(p, d, q))
+        fm = m.fit()
+        return fm.get_forecast(steps=horizon_days)
     try:
-        model = ARIMA(series, order=(p, d, q))
-        fitted_model = model.fit()
-        forecast_res = fitted_model.get_forecast(steps=horizon_days)
+        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+            fut = _ex.submit(_fit)
+            forecast_res = fut.result(timeout=max(0.5, remain))
+    except _cf.TimeoutError:
+        base = generate_baseline_forecast(series, commodity, horizon_days)
+        base["quality"]["fallback_reason"] = "free_tier_budget"
+        return base
     except Exception:
         base = generate_baseline_forecast(series, commodity, horizon_days)
         base["quality"]["fallback_reason"] = "arima_fit_failed"
-        return base
-    if _t2.time() > _deadline:
-        base = generate_baseline_forecast(series, commodity, horizon_days)
-        base["quality"]["fallback_reason"] = "free_tier_budget_post"
         return base
     predicted_mean = forecast_res.predicted_mean
     conf_int = forecast_res.conf_int(alpha=0.05)
