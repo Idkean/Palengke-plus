@@ -76,18 +76,12 @@ class SqaFixRegressionTests(unittest.TestCase):
             [100.0 + index for index in range(10)],
             index=pd.date_range('2026-09-14', periods=10),
         )
-        predictions = series.iloc[-2:]
-        with patch.object(forecaster, 'find_best_arima_order', return_value=(1, 1, 0)) as order_search:
-            with patch.object(forecaster, 'ARIMA') as arima:
-                arima.return_value.fit.return_value.forecast.return_value = predictions
-                result = forecaster.evaluate_holdout(series, 2)
-
-        selected_training = order_search.call_args.args[0]
-        self.assertEqual(len(selected_training), 8)
-        self.assertEqual(selected_training.index[-1], series.index[-3])
-        self.assertEqual(result['order'], (1, 1, 0))
+        # ponytail: holdout now naive last-value on 0.1 CPU — no ARIMA fit, fixed (1,1,1); verifies training slicing
+        result = forecaster.evaluate_holdout(series, 2)
+        self.assertEqual(result['order'], (1, 1, 1))
         self.assertEqual(result['validation_points'], 2)
-        self.assertEqual(result['rmse'], 0.0)
+        # training = first 8 (100..107), last=107, actuals=[108,109] -> rmse sqrt((1^2+2^2)/2)=1.58
+        self.assertAlmostEqual(result['rmse'], 1.58, places=1)
 
 
 if __name__ == '__main__':
