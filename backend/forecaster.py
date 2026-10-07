@@ -166,12 +166,9 @@ def generate_arima_forecast(commodity: str, horizon_days: int = 7) -> dict:
     predicted_mean = forecast_res.predicted_mean
     conf_int = forecast_res.conf_int(alpha=0.05)
 
-    in_sample_pred = fitted_model.predict(start=1, end=len(series) - 1)
-    actuals = series.iloc[1:]
-    preds = pd.Series(in_sample_pred.values, index=actuals.index)
-
-    mape = safe_mape(actuals, preds)
-    rmse = float(np.sqrt(np.mean((actuals.values - preds.values) ** 2))) if len(actuals) > 0 else 0.0
+    # ponytail: skip in-sample predict on 0.1 CPU, reuse validation metrics
+    mape = validation["mape"] if validation["mape"] is not None else 0.0
+    rmse = validation["rmse"] if validation["rmse"] is not None else 0.0
 
     forecast_dates = [d.strftime('%Y-%m-%d') for d in predicted_mean.index]
 

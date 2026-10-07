@@ -812,7 +812,7 @@ class _AnalyticsTabState extends State<AnalyticsTab> {
       history = [];
     }
     try {
-      forecast = await widget.api.fetchForecast(selectedCommodity!).timeout(const Duration(seconds: 62));
+      forecast = await widget.api.fetchForecast(selectedCommodity!).timeout(const Duration(seconds: 90));
     } catch (e) {
       forecastErr = e.toString().replaceAll(RegExp(r'^Exception:\s*'), '');
     }
@@ -2206,10 +2206,27 @@ class ForecastScreen extends StatefulWidget {
 
 class _ForecastScreenState extends State<ForecastScreen> {
   late Future<Map<String, dynamic>> future;
+  List<dynamic> _history = [];
   @override
   void initState() {
     super.initState();
-    future = widget.api.fetchForecast(widget.commodity);
+    future = _load();
+  }
+  Future<Map<String, dynamic>> _load() async {
+    List<dynamic> history = [];
+    Map<String, dynamic> forecast = {};
+    String? forecastErr;
+    try {
+      history = await widget.api.fetchHistory(widget.commodity, days: 30).timeout(const Duration(seconds: 35));
+      _history = history;
+    } catch (_) { history = _history; }
+    try {
+      forecast = await widget.api.fetchForecast(widget.commodity).timeout(const Duration(seconds: 90));
+    } catch (e) {
+      forecastErr = e.toString().replaceAll(RegExp(r'^Exception:\s*'), '');
+    }
+    if (history.isEmpty && forecast.isEmpty && forecastErr != null) throw Exception(forecastErr);
+    return {'history': history, 'forecast': forecast, 'forecastError': forecastErr};
   }
 
   Widget _modelComparisonCard(List<dynamic> models) {
@@ -2294,14 +2311,15 @@ class _ForecastScreenState extends State<ForecastScreen> {
         if (snapshot.hasError) {
           return _errorState(
             snapshot.error.toString(),
-            () => setState(
-              () => future = widget.api.fetchForecast(widget.commodity),
-            ),
+            () => setState(() => future = _load()),
           );
         }
         final data = snapshot.data!;
-        final forecasts = (data['forecast'] as List<dynamic>?) ?? [];
-        final quality = (data['quality'] as Map<dynamic, dynamic>?) ?? {};
+        final history = (data['history'] as List<dynamic>?) ?? [];
+        final forecastMap = (data['forecast'] as Map<String, dynamic>?) ?? {};
+        final forecastErr = data['forecastError'] as String?;
+        final forecasts = (forecastMap['forecast'] as List<dynamic>?) ?? [];
+        final quality = (forecastMap['quality'] as Map<dynamic, dynamic>?) ?? {}
         final qualityStatus = quality['status']?.toString() ?? 'unknown';
         final limitedHistory = qualityStatus != 'validated';
         final observations = quality['observations']?.toString() ?? 'n/a';
@@ -2421,12 +2439,12 @@ class _ForecastScreenState extends State<ForecastScreen> {
               children: [
                 if (!limitedHistory) ...[
                   Expanded(
-                    child: _metric('Error rate', '${data['metrics']['mape']}%'),
+                    child: _metric('Error rate', '${forecastMap['metrics']?['mape'] ?? 'n/a'}%'),
                   ),
                   Expanded(
                     child: _metric(
                       'Typical error',
-                      '₱${data['metrics']['rmse']}',
+                      '₱${forecastMap['metrics']?['rmse'] ?? 'n/a'}',
                     ),
                   ),
                 ],
@@ -2435,43 +2453,77 @@ class _ForecastScreenState extends State<ForecastScreen> {
             ),
 
             const SizedBox(height: 18),
+            if (forecastErr != null && forecasts.isEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(10), border: Border.all(color: Color(0xFFFFCC80))),
+                child: Row(children: [const Icon(Icons.hourglass_top, size: 16), const SizedBox(width: 8), Expanded(child: Text('Forecast warming on free server (cold start) - 30-day history below is live. Pull to refresh. $forecastErr', style: TextStyle(fontSize: 11)))]),
+              ),
             const Text(
               'Expected price over 7 days',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
-            Container(
-              height: 240,
-              padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
-              decoration: _cardDecoration(),
-              child: LineChart(
-                LineChartData(
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: points,
-                      isCurved: true,
-                      color: green,
-                      barWidth: 3,
-                      dotData: const FlDotData(show: true),
+            if (forecasts.isEmpty && history.isNotEmpty)
+              Container(
+                height: 240,
+                padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
+                decoration: _cardDecoration(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Forecast not ready yet - showing 30-day history', style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: LineChart(
+                        LineChartData(
+                          lineBarsData: [LineChartBarData(spots: history.map((e) => FlSpot(history.indexOf(e).toDouble(), _number(e['price']))).toList().isEmpty ? [FlSpot(0,0)] : history.map((e) => FlSpot(history.indexOf(e).toDouble(), _number(e['price']))).toList(), isCurved: true, color: green, barWidth: 2.5, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: true, color: green.withValues(alpha: 0.08)))],
+                          gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (_) => FlLine(color: Colors.grey.shade200)),
+                          titlesData: const FlTitlesData(show: false),
+                          borderData: FlBorderData(show: false),
+                        ),
+                      ),
                     ),
                   ],
-                  gridData: FlGridData(
-                    show: true,
-                    drawVerticalLine: false,
-                    getDrawingHorizontalLine: (_) =>
-                        FlLine(color: Colors.grey.shade200),
-                  ),
-                  titlesData: const FlTitlesData(show: false),
-                  borderData: FlBorderData(show: false),
                 ),
+              )
+            else
+              Container(
+                height: 240,
+                padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
+                decoration: _cardDecoration(),
+                child: forecasts.length < 1
+                    ? const Center(child: Text('Forecast warming - pull to refresh'))
+                    : LineChart(
+                        LineChartData(
+                          lineBarsData: [LineChartBarData(spots: points, isCurved: true, color: green, barWidth: 3, dotData: const FlDotData(show: true))],
+                          gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (_) => FlLine(color: Colors.grey.shade200)),
+                          titlesData: const FlTitlesData(show: false),
+                          borderData: FlBorderData(show: false),
+                        ),
+                      ),
               ),
-            ),
             const SizedBox(height: 18),
             const Text(
               'Daily estimate and likely range',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-            ...forecasts.map(
+            if (forecasts.isEmpty && history.isNotEmpty)
+              ...history.take(7).map(
+                (item) => Card(
+                  elevation: 0,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Row(children: [
+                      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(item['date'].toString(), style: const TextStyle(fontWeight: FontWeight.w600)), const SizedBox(height: 3), Text('History: ₱${_price(item['price'])}', style: const TextStyle(fontSize: 12, color: Colors.blueGrey)) ])),
+                      FittedBox(fit: BoxFit.scaleDown, child: Text('₱${_price(item['price'])}', style: const TextStyle(fontWeight: FontWeight.bold, color: navy, fontSize: 16))),
+                    ]),
+                  ),
+                ),
+              )
+            else
+              ...forecasts.map(
               (item) => Card(
                 elevation: 0,
                 child: Padding(

@@ -229,14 +229,14 @@ def get_historical_prices(commodity: str, days: int = Query(30, ge=7, le=365)):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/api/forecast/{commodity}")
-def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30)):
-    """Generates ARIMA forecasts and confidence intervals. ponytail: 6h cache."""
+async def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30)):
+    """Generates ARIMA forecasts. ponytail: to_thread so 0.1 CPU not block health/analytics."""
     key = (commodity.lower().strip(), horizon)
     cached = _FORECAST_CACHE.get(key)
     if cached and _time.time() - cached[0] < _FORECAST_TTL:
         return cached[1]
     try:
-        result = generate_arima_forecast(commodity, horizon_days=horizon)
+        result = await asyncio.to_thread(generate_arima_forecast, commodity, horizon)
         _FORECAST_CACHE[key] = (_time.time(), result)
         return result
     except Exception as e:
