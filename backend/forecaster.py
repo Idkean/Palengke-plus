@@ -61,25 +61,13 @@ def safe_mape(actuals: pd.Series, preds: pd.Series) -> float:
 
 _ORDER_CACHE: dict[tuple[int, tuple], tuple] = {}
 def find_best_arima_order(series: pd.Series, max_p=2, max_d=2, max_q=2) -> tuple:
-    """Grid-searches ARIMA(p,d,q) to minimize AIC.
-    ponytail: free tier 27 fits >30s -> try 6 common orders only."""
+    """Returns fixed order on free tier. ponytail: grid search when paid CPU."""
     key = (len(series), (max_p, max_d, max_q))
     if key in _ORDER_CACHE:
         return _ORDER_CACHE[key]
-    # ponytail: 6 orders enough for forecast, full 27 on heavy machine only
-    candidates = [(1,1,1),(0,1,1),(1,1,0),(1,0,0),(0,1,0),(1,0,1)]
-    best_aic = float("inf")
-    best_order = (1, 1, 1)
-    for p, d, q in candidates:
-        try:
-            fitted = ARIMA(series, order=(p, d, q)).fit()
-            if fitted.aic < best_aic:
-                best_aic = fitted.aic
-                best_order = (p, d, q)
-        except Exception:
-            continue
-    _ORDER_CACHE[key] = best_order
-    return best_order
+    order = (1, 1, 1)  # ponytail: skip 6 fits, 0.1 CPU too slow
+    _ORDER_CACHE[key] = order
+    return order
 
 
 def evaluate_holdout(series: pd.Series, horizon: int) -> dict:
