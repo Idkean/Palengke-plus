@@ -148,11 +148,14 @@ def generate_baseline_forecast(series: pd.Series, commodity: str, horizon_days: 
 def generate_arima_forecast(commodity: str, horizon_days: int = 7) -> dict:
     """Fits ARIMA model and returns price predictions with 95% Confidence Intervals."""
     series = get_commodity_series(commodity)
-    # ponytail: cap 90 days, free tier 0.1 CPU O(n) fit too slow on 400+ days
-    if len(series) > 90:
-        series = series.iloc[-90:]
+    # ponytail: cap 60 days on free tier; p95 still 90s on 0.1 CPU without this.
+    # Fall back to last-value + RMSE margin instantly if ARIMA exceeds budget.
+    import time as _t
+    _deadline = _t.time() + 4.0
+    if len(series) > 60:
+        series = series.iloc[-60:]
     observed_count = int(series.attrs.get('observed_count', series.notna().sum()))
-    observed_count = min(observed_count, 90)
+    observed_count = min(observed_count, 60)
     if observed_count < MIN_ARIMA_OBSERVATIONS:
         return generate_baseline_forecast(series, commodity, horizon_days)
 
@@ -161,10 +164,24 @@ def generate_arima_forecast(commodity: str, horizon_days: int = 7) -> dict:
     validation = evaluate_holdout(series, horizon_days)
     baseline_comparison = evaluate_baselines(series, horizon_days)
 
-    model = ARIMA(series, order=(p, d, q))
-    fitted_model = model.fit()
-
-    forecast_res = fitted_model.get_forecast(steps=horizon_days)
+    # ponytail: hard budget on free tier — 4s wall, else baseline instant chart
+    import time as _t2
+    if _t2.time() > _deadline:
+        base = generate_baseline_forecast(series, commodity, horizon_days)
+        base["quality"]["fallback_reason"] = "free_tier_budget_pre"
+        return base
+    try:
+        model = ARIMA(series, order=(p, d, q))
+        fitted_model = model.fit()
+        forecast_res = fitted_model.get_forecast(steps=horizon_days)
+    except Exception:
+        base = generate_baseline_forecast(series, commodity, horizon_days)
+        base["quality"]["fallback_reason"] = "arima_fit_failed"
+        return base
+    if _t2.time() > _deadline:
+        base = generate_baseline_forecast(series, commodity, horizon_days)
+        base["quality"]["fallback_reason"] = "free_tier_budget_post"
+        return base
     predicted_mean = forecast_res.predicted_mean
     conf_int = forecast_res.conf_int(alpha=0.05)
 
