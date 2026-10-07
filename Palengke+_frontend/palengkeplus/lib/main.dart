@@ -2319,7 +2319,7 @@ class _ForecastScreenState extends State<ForecastScreen> {
         final forecastMap = (data['forecast'] as Map<String, dynamic>?) ?? {};
         final forecastErr = data['forecastError'] as String?;
         final forecasts = (forecastMap['forecast'] as List<dynamic>?) ?? [];
-        final quality = (forecastMap['quality'] as Map<dynamic, dynamic>?) ?? {}
+        final quality = (forecastMap['quality'] as Map<dynamic, dynamic>?) ?? {};
         final qualityStatus = quality['status']?.toString() ?? 'unknown';
         final limitedHistory = qualityStatus != 'validated';
         final observations = quality['observations']?.toString() ?? 'n/a';
@@ -2493,7 +2493,7 @@ class _ForecastScreenState extends State<ForecastScreen> {
                 height: 240,
                 padding: const EdgeInsets.fromLTRB(8, 16, 16, 8),
                 decoration: _cardDecoration(),
-                child: forecasts.length < 1
+                child: forecasts.isEmpty
                     ? const Center(child: Text('Forecast warming - pull to refresh'))
                     : LineChart(
                         LineChartData(
