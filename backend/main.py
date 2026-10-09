@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import sqlite3
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -10,10 +9,19 @@ import time as _time
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
-from database import DB_PATH, init_db
+from database import DB_PATH, init_db, get_conn, _adapt, USE_POSTGRES
 from forecaster import generate_arima_forecast, get_commodity_series
 from sync_da_prices import sync as sync_da_prices
+
+# fix stale-CDN: API up but edge/Proxy caches 4-day-old JSON
+def _no_store(resp: JSONResponse) -> JSONResponse:
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 _FORECAST_CACHE: dict[tuple, tuple] = {}  # (commodity,horizon) -> (ts, result)
 _FORECAST_TTL = 6 * 60 * 60
 
@@ -31,9 +39,11 @@ async def _prewarm_forecast_cache(done: asyncio.Event):
     # ponytail: warm cache off-request so first user hits instant; stdlib only
     await asyncio.sleep(12)  # let first health/commodities serve before CPU work
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         try:
-            rows = conn.execute("SELECT DISTINCT commodity FROM prices").fetchall()
+            cur = conn.cursor()
+            cur.execute(_adapt("SELECT DISTINCT commodity FROM prices"))
+            rows = cur.fetchall()
         finally:
             conn.close()
         commodities = [r[0] for r in rows]
@@ -57,9 +67,11 @@ async def _maybe_sync_now() -> int:
     # ponytail: eager sync if DB empty or latest < today (fixes "yesterday" stale)
     try:
         from datetime import date as _date
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         try:
-            cnt, latest = conn.execute("SELECT COUNT(*), MAX(date) FROM prices").fetchone()
+            cur = conn.cursor()
+            cur.execute(_adapt("SELECT COUNT(*), MAX(date) FROM prices"))
+            cnt, latest = cur.fetchone()
         finally:
             conn.close()
         today = _date.today().isoformat()
@@ -73,24 +85,22 @@ async def _maybe_sync_now() -> int:
         return 0
 
 async def da_sync_loop(prewarm_done: asyncio.Event):
-    await prewarm_done.wait()  # ponytail: never run heavy 40-PDF sync before forecast cache ready
-    # ponytail: sync eagerly if yesterday-stale, else wait interval
+    # fix: never block DA sync on forecast prewarm; 90s timeout on 0.1 CPU starved sync -> 4-day stale
+    imported = 0
     try:
-        imported = await asyncio.wait_for(_maybe_sync_now(), timeout=90)
+        imported = await _maybe_sync_now()
         if imported:
             logger.info("eager DA sync imported %s observations", imported)
             prewarm_done.clear()
             await _prewarm_forecast_cache(prewarm_done)
-        else:
-            await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)
-    except asyncio.TimeoutError:
-        logger.warning("eager DA sync timed out on 0.1 CPU, defer to next interval")
+    except Exception:
+        logger.exception("eager DA sync failed")
+    if not imported:
         await asyncio.sleep(DA_SYNC_INTERVAL_SECONDS)
     while True:
         try:
             imported = await asyncio.to_thread(sync_da_prices)
             logger.info("DA background sync imported %s observations", imported)
-            # refresh forecast cache after new data
             prewarm_done.clear()
             await _prewarm_forecast_cache(prewarm_done)
         except Exception:
@@ -130,31 +140,33 @@ app.add_middleware(
 @app.get("/api/health")
 def health_check():
     """Reports API and local data-store readiness."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     try:
-        row = conn.execute(
-            "SELECT COUNT(*), MAX(date) FROM prices"
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute(_adapt("SELECT COUNT(*), MAX(date) FROM prices"))
+        row = cur.fetchone()
     finally:
         conn.close()
 
     record_count, latest_date = row
-    return {
+    return _no_store(JSONResponse({
         "status": "ok",
-        "database": "ready",
+        "database": "postgres" if USE_POSTGRES else "sqlite",
         "price_records": record_count,
         "latest_price_date": latest_date,
-    }
+    }))
 
 
 @app.api_route("/api/admin/sync", methods=["GET", "POST"])
 async def trigger_sync():
-    """Manually triggers DA sync (real PDFs) and returns new counts. ponytail: ephemeral SQLite — move to Postgres when need persistence."""
+    """Manually triggers DA sync (real PDFs) and returns new counts. ponytail: Postgres persists; SQLite fallback for local dev."""
     try:
         imported = await asyncio.to_thread(sync_da_prices)
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         try:
-            row = conn.execute("SELECT COUNT(*), MAX(date) FROM prices").fetchone()
+            cur = conn.cursor()
+            cur.execute(_adapt("SELECT COUNT(*), MAX(date) FROM prices"))
+            row = cur.fetchone()
         finally:
             conn.close()
         return {"imported": imported, "price_records": row[0], "latest_price_date": row[1], "source": "DA-4A live PDFs"}
@@ -162,10 +174,80 @@ async def trigger_sync():
         logger.exception("Manual sync failed")
         raise HTTPException(status_code=500, detail=str(e))
 
+class VendorPriceIn(BaseModel):
+    commodity: str
+    price: float
+    unit: str
+    vendor_name: str
+    market: str
+    notes: str = ""
+
+@app.get("/api/vendor-prices")
+def list_vendor_prices(commodity: str | None = None):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if commodity:
+            cur.execute(
+                _adapt("SELECT id, date, commodity, price, unit, vendor_name, market, notes FROM vendor_prices WHERE commodity = ? ORDER BY date DESC, id DESC"),
+                (commodity.lower().strip(),),
+            )
+            rows = cur.fetchall()
+        else:
+            cur.execute(
+                _adapt("SELECT id, date, commodity, price, unit, vendor_name, market, notes FROM vendor_prices ORDER BY date DESC, id DESC")
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return {"vendor_prices": [{"id": r[0], "date": r[1], "commodity": r[2], "price": r[3], "unit": r[4], "vendor_name": r[5], "market": r[6], "notes": r[7]} for r in rows]}
+
+@app.post("/api/vendor-prices")
+def create_vendor_price(payload: VendorPriceIn):
+    commodity = payload.commodity.lower().strip()
+    unit = payload.unit.strip().lower()
+    vendor = payload.vendor_name.strip()
+    market = payload.market.strip()
+    if not commodity:
+        raise HTTPException(status_code=400, detail="commodity required")
+    if payload.price <= 0 or payload.price > 100000:
+        raise HTTPException(status_code=400, detail="price must be > 0")
+    allowed = {"per kg", "per piece", "per bundle", "per sack", "per pack"}
+    if unit not in allowed:
+        raise HTTPException(status_code=400, detail=f"unit must be one of {sorted(allowed)}")
+    if not vendor or not market:
+        raise HTTPException(status_code=400, detail="vendor_name and market required")
+    if len(vendor) > 60 or len(market) > 60:
+        raise HTTPException(status_code=400, detail="vendor/market too long")
+    from datetime import date as _d
+    today = _d.today().isoformat()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                _adapt("INSERT INTO vendor_prices (date, commodity, price, unit, vendor_name, market, notes) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"),
+                (today, commodity, round(float(payload.price), 2), unit, vendor, market, payload.notes.strip()[:200]),
+            )
+            new_id = cur.fetchone()[0]
+        else:
+            cur.execute(
+                _adapt("INSERT INTO vendor_prices (date, commodity, price, unit, vendor_name, market, notes) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+                (today, commodity, round(float(payload.price), 2), unit, vendor, market, payload.notes.strip()[:200]),
+            )
+            cur.execute("SELECT last_insert_rowid()")
+            new_id = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "id": new_id}
+
 @app.get("/api/commodities")
 def list_commodities():
-    """Lists commodities with category, latest price, and daily movement."""
-    conn = sqlite3.connect(DB_PATH)
+    """Lists commodities with category, latest price, and daily movement. No-store fixes stale CDN."""
+    # wrapping return in _no_store happens at end of function; helper applied there
+    # so keep docstring change to bust any func-level caching
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT current.commodity,
@@ -194,7 +276,7 @@ def list_commodities():
     rows = cursor.fetchall()
     conn.close()
 
-    return {
+    data = {
         "commodities": [
             {
                 "name": row[0],
@@ -212,10 +294,16 @@ def list_commodities():
             for row in rows
         ]
     }
+    # no-store avoids Render/CDN caching 4-day-old prices while API reports 200
+    return _no_store(JSONResponse(data))
 
 
 @app.get("/api/analytics")
 def get_analytics():
+    analytics = _get_analytics_data()
+    return _no_store(JSONResponse(analytics))
+
+def _get_analytics_data():  # split for no-store wrapper
     """Returns price movement summaries for the analytics dashboard."""
     commodities = list_commodities()["commodities"]
     rising = [item for item in commodities if item["delta_percent"] > 0]

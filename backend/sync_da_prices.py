@@ -1,17 +1,16 @@
 import re
-import sqlite3
 import urllib.request
 from io import BytesIO
 from datetime import datetime
 
 from pypdf import PdfReader
 
-from database import DB_PATH, init_db, insert_price
+from database import DB_PATH, init_db, insert_price, get_conn, _adapt
 
 DA_PAGE = "https://calabarzon.da.gov.ph/da-calabarzon-bantay-presyo/"
 SOURCE = "Department of Agriculture IV-A CALABARZON Bantay Presyo"
 COVERAGE = "CALABARZON Region IV-A public markets"
-REPORT_HISTORY_LIMIT = 40  # fetch 40 to absorb skipped/unreadable PDFs and land on 30+ real dates
+REPORT_HISTORY_LIMIT = 50  # bumped 40->50: fixes 4-day stale when top reports unreadable/duplicate (Oct 7 dup)
 SKIP_REPORT_LABELS = {"September 18, 2026", "September 16, 2026"}
 
 COMMODITIES = {
@@ -68,7 +67,7 @@ def download(url):
         url,
         headers={"User-Agent": "Mozilla/5.0 (PalengkePlus official-data-sync)"},
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=20) as response:
         return response.read()
 
 
@@ -106,10 +105,13 @@ def sync():
         raise RuntimeError("No official DA-4A Bantay Presyo reports were found")
 
     init_db()
-    with sqlite3.connect(DB_PATH) as conn:
-        existing_dates = {
-            row[0] for row in conn.execute("SELECT DISTINCT date FROM prices")
-        }
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(_adapt("SELECT DISTINCT date FROM prices"))
+        existing_dates = {row[0] for row in cur.fetchall()}
+    finally:
+        conn.close()
     for url, published_label in reports:
         published_date = datetime.strptime(published_label, "%B %d, %Y").date().isoformat()
         if published_date in existing_dates:

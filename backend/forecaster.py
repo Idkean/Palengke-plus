@@ -1,5 +1,4 @@
 
-import sqlite3
 import warnings
 from itertools import product
 from pathlib import Path
@@ -8,7 +7,7 @@ import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 
-from database import DB_PATH
+from database import DB_PATH, get_conn, _adapt
 
 warnings.filterwarnings("ignore")
 
@@ -16,9 +15,9 @@ MIN_ARIMA_OBSERVATIONS = 14
 
 def get_commodity_series(commodity: str) -> pd.Series:
     """Loads and cleans historical price time-series for a commodity."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     df = pd.read_sql_query(
-        "SELECT date, price FROM prices WHERE commodity = ? ORDER BY date ASC",
+        _adapt("SELECT date, price FROM prices WHERE commodity = ? ORDER BY date ASC"),
         conn,
         params=(commodity.lower().strip(),)
     )
