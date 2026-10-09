@@ -24,6 +24,7 @@ def _no_store(resp: JSONResponse) -> JSONResponse:
     return resp
 _FORECAST_CACHE: dict[tuple, tuple] = {}  # (commodity,horizon) -> (ts, result)
 _FORECAST_TTL = 6 * 60 * 60
+_FORECAST_TTL_BAD = 5 * 60  # ponytail: baseline/insufficient cached 5m not 6h so thin-DB busts fast
 
 logger = logging.getLogger(__name__)
 DA_SYNC_INTERVAL_SECONDS = int(os.getenv("DA_SYNC_INTERVAL_SECONDS", str(6 * 60 * 60)))
@@ -49,8 +50,11 @@ async def _prewarm_forecast_cache(done: asyncio.Event):
         commodities = [r[0] for r in rows]
         for name in commodities:
             key = (name.lower().strip(), 7)
-            if key in _FORECAST_CACHE and _time.time() - _FORECAST_CACHE[key][0] < _FORECAST_TTL:
-                continue
+            if key in _FORECAST_CACHE:
+                ts, res = _FORECAST_CACHE[key]
+                ttl = _FORECAST_TTL_BAD if res.get("quality", {}).get("status") == "insufficient_history" else _FORECAST_TTL
+                if _time.time() - ts < ttl:
+                    continue
             try:
                 result = await asyncio.to_thread(generate_arima_forecast, name, horizon_days=7)
                 _FORECAST_CACHE[key] = (_time.time(), result)
@@ -91,6 +95,7 @@ async def da_sync_loop(prewarm_done: asyncio.Event):
         imported = await _maybe_sync_now()
         if imported:
             logger.info("eager DA sync imported %s observations", imported)
+            _FORECAST_CACHE.clear()
             prewarm_done.clear()
             await _prewarm_forecast_cache(prewarm_done)
     except Exception:
@@ -101,6 +106,8 @@ async def da_sync_loop(prewarm_done: asyncio.Event):
         try:
             imported = await asyncio.to_thread(sync_da_prices)
             logger.info("DA background sync imported %s observations", imported)
+            if imported:
+                _FORECAST_CACHE.clear()
             prewarm_done.clear()
             await _prewarm_forecast_cache(prewarm_done)
         except Exception:
@@ -162,6 +169,8 @@ async def trigger_sync():
     """Manually triggers DA sync (real PDFs) and returns new counts. ponytail: Postgres persists; SQLite fallback for local dev."""
     try:
         imported = await asyncio.to_thread(sync_da_prices)
+        if imported:
+            _FORECAST_CACHE.clear()
         conn = get_conn()
         try:
             cur = conn.cursor()
@@ -351,8 +360,11 @@ async def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30
     """Generates ARIMA forecasts. ponytail: to_thread so 0.1 CPU not block health/analytics."""
     key = (commodity.lower().strip(), horizon)
     cached = _FORECAST_CACHE.get(key)
-    if cached and _time.time() - cached[0] < _FORECAST_TTL:
-        return cached[1]
+    if cached:
+        ts, res = cached
+        ttl = _FORECAST_TTL_BAD if res.get("quality", {}).get("status") == "insufficient_history" else _FORECAST_TTL
+        if _time.time() - ts < ttl:
+            return res
     try:
         result = await asyncio.to_thread(generate_arima_forecast, commodity, horizon)
         _FORECAST_CACHE[key] = (_time.time(), result)

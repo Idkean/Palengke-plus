@@ -10,7 +10,7 @@ from database import DB_PATH, init_db, insert_price, get_conn, _adapt
 DA_PAGE = "https://calabarzon.da.gov.ph/da-calabarzon-bantay-presyo/"
 SOURCE = "Department of Agriculture IV-A CALABARZON Bantay Presyo"
 COVERAGE = "CALABARZON Region IV-A public markets"
-REPORT_HISTORY_LIMIT = 50  # bumped 40->50: fixes 4-day stale when top reports unreadable/duplicate (Oct 7 dup)
+REPORT_HISTORY_LIMIT = 80  # ponytail: 50->80 covers 35+ distinct dates from Aug 1; bump to 100 if DA gaps grow
 SKIP_REPORT_LABELS = {"September 18, 2026", "September 16, 2026"}
 
 COMMODITIES = {
