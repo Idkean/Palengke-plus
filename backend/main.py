@@ -144,12 +144,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-@app.get("/health")
-@app.get("/api")
-@app.get("/api/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/health", methods=["GET", "HEAD"])
+@app.api_route("/api", methods=["GET", "HEAD"])
+def liveness():
+    """Liveness probe never hits DB. Fixes Render/UptimeRobot 502 when DB slow."""
+    return _no_store(JSONResponse({"status": "ok"}))
+
+
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health_check():
-    """Reports API and local data-store readiness. Aliases fix Render 502 healthcheck (/ vs /api/health)."""
+    """Detailed DB health. Keep DB work here only; liveness above stays fast."""
     try:
         conn = get_conn()
         try:
@@ -257,11 +262,8 @@ def create_vendor_price(payload: VendorPriceIn):
         conn.close()
     return {"ok": True, "id": new_id}
 
-@app.get("/api/commodities")
-def list_commodities():
-    """Lists commodities with category, latest price, and daily movement. No-store fixes stale CDN."""
-    # wrapping return in _no_store happens at end of function; helper applied there
-    # so keep docstring change to bust any func-level caching
+def _get_commodities_data():
+    """Inner fetch without JSONResponse wrapper. ponytail: avoids JSONResponse subscript bug that broke /api/analytics 500."""
     conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("""
@@ -290,8 +292,7 @@ def list_commodities():
     """)
     rows = cursor.fetchall()
     conn.close()
-
-    data = {
+    return {
         "commodities": [
             {
                 "name": row[0],
@@ -309,8 +310,12 @@ def list_commodities():
             for row in rows
         ]
     }
-    # no-store avoids Render/CDN caching 4-day-old prices while API reports 200
-    return _no_store(JSONResponse(data))
+
+
+@app.get("/api/commodities")
+def list_commodities():
+    """Lists commodities with category, latest price, and daily movement. No-store fixes stale CDN."""
+    return _no_store(JSONResponse(_get_commodities_data()))
 
 
 @app.get("/api/analytics")
@@ -320,7 +325,7 @@ def get_analytics():
 
 def _get_analytics_data():  # split for no-store wrapper
     """Returns price movement summaries for the analytics dashboard."""
-    commodities = list_commodities()["commodities"]
+    commodities = _get_commodities_data()["commodities"]
     rising = [item for item in commodities if item["delta_percent"] > 0]
     falling = [item for item in commodities if item["delta_percent"] < 0]
 
