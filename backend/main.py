@@ -144,24 +144,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+@app.get("/health")
+@app.get("/api")
 @app.get("/api/health")
 def health_check():
-    """Reports API and local data-store readiness."""
-    conn = get_conn()
+    """Reports API and local data-store readiness. Aliases fix Render 502 healthcheck (/ vs /api/health)."""
     try:
-        cur = conn.cursor()
-        cur.execute(_adapt("SELECT COUNT(*), MAX(date) FROM prices"))
-        row = cur.fetchone()
-    finally:
-        conn.close()
-
-    record_count, latest_date = row
-    return _no_store(JSONResponse({
-        "status": "ok",
-        "database": "postgres" if USE_POSTGRES else "sqlite",
-        "price_records": record_count,
-        "latest_price_date": latest_date,
-    }))
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(_adapt("SELECT COUNT(*), MAX(date) FROM prices"))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        record_count, latest_date = row
+        return _no_store(JSONResponse({
+            "status": "ok",
+            "database": "postgres" if USE_POSTGRES else "sqlite",
+            "price_records": record_count,
+            "latest_price_date": latest_date,
+        }))
+    except Exception as e:
+        logger.exception("health check failed")
+        return _no_store(JSONResponse({"status": "error", "detail": str(e)}, status_code=500))
 
 
 @app.api_route("/api/admin/sync", methods=["GET", "POST"])
