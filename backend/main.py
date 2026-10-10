@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 import time as _time
 
+import hashlib
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from database import DB_PATH, init_db, get_conn, _adapt, USE_POSTGRES
+try:
+    from piece_weights import PIECE_WEIGHT_KG, per_piece_estimate, piece_weight
+except Exception:
+    PIECE_WEIGHT_KG = {}
+    def per_piece_estimate(c, p): return None
+    def piece_weight(c): return None
 from forecaster import generate_arima_forecast, get_commodity_series
 from sync_da_prices import sync as sync_da_prices
 
@@ -22,7 +29,7 @@ def _no_store(resp: JSONResponse) -> JSONResponse:
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
-_FORECAST_CACHE: dict[tuple, tuple] = {}  # (commodity,horizon) -> (ts, result)
+_FORECAST_CACHE: dict[tuple, tuple] = {}  # (commodity,horizon,source) -> (ts, result)
 _FORECAST_TTL = 6 * 60 * 60
 _FORECAST_TTL_BAD = 5 * 60  # ponytail: baseline/insufficient cached 5m not 6h so thin-DB busts fast
 
@@ -49,14 +56,14 @@ async def _prewarm_forecast_cache(done: asyncio.Event):
             conn.close()
         commodities = [r[0] for r in rows]
         for name in commodities:
-            key = (name.lower().strip(), 7)
+            key = (name.lower().strip(), 7, "da")
             if key in _FORECAST_CACHE:
                 ts, res = _FORECAST_CACHE[key]
                 ttl = _FORECAST_TTL_BAD if res.get("quality", {}).get("status") == "insufficient_history" else _FORECAST_TTL
                 if _time.time() - ts < ttl:
                     continue
             try:
-                result = await asyncio.to_thread(generate_arima_forecast, name, horizon_days=7)
+                result = await asyncio.to_thread(generate_arima_forecast, name, horizon_days=7, source="da")
                 _FORECAST_CACHE[key] = (_time.time(), result)
                 logger.info("prewarm cached %s", name)
             except Exception:
@@ -258,9 +265,84 @@ def create_vendor_price(payload: VendorPriceIn):
             cur.execute("SELECT last_insert_rowid()")
             new_id = cur.fetchone()[0]
         conn.commit()
+        for k in list(_FORECAST_CACHE.keys()):
+            if len(k)==3 and k[2]=="vendor":
+                _FORECAST_CACHE.pop(k,None)
     finally:
         conn.close()
     return {"ok": True, "id": new_id}
+
+def _hash_pw(pw: str) -> str:
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+class VendorAuthIn(BaseModel):
+    username: str
+    password: str
+    market: str = ""
+
+@app.post("/api/vendor-auth/register")
+def vendor_register(payload: VendorAuthIn):
+    u=payload.username.strip().lower()
+    pw=payload.password.strip()
+    m=payload.market.strip()
+    if len(u)<3 or len(pw)<4:
+        raise HTTPException(status_code=400, detail="username >=3 and password >=4 required")
+    if len(m)<2:
+        raise HTTPException(status_code=400, detail="market required")
+    conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute(_adapt("SELECT id FROM vendor_users WHERE username=?"), (u,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="username taken")
+        from datetime import date as _d
+        cur.execute(_adapt("INSERT INTO vendor_users (username,password_hash,market,created_at) VALUES (?,?,?,?)"), (u, _hash_pw(pw), m, _d.today().isoformat()))
+        if USE_POSTGRES:
+            cur.execute(_adapt("SELECT id FROM vendor_users WHERE username=?"), (u,))
+            nid=cur.fetchone()[0]
+        else:
+            cur.execute("SELECT last_insert_rowid()")
+            nid=cur.fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "id": nid, "username": u}
+
+@app.post("/api/vendor-auth/login")
+def vendor_login(payload: VendorAuthIn):
+    u=payload.username.strip().lower()
+    pw=payload.password.strip()
+    conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute(_adapt("SELECT id, password_hash, market FROM vendor_users WHERE username=?"), (u,))
+        row=cur.fetchone()
+        if not row or row[1]!=_hash_pw(pw):
+            raise HTTPException(status_code=401, detail="invalid credentials")
+        return {"ok": True, "id": row[0], "username": u, "market": row[2]}
+    finally:
+        conn.close()
+
+@app.delete("/api/vendor-prices/{vid}")
+def delete_vendor_price(vid: int, username: str = Query("")):
+    conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute(_adapt("SELECT vendor_name FROM vendor_prices WHERE id=?"), (vid,))
+        row=cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        if username and row[0].strip().lower()!=username.strip().lower():
+            raise HTTPException(status_code=403, detail="not owner")
+        cur.execute(_adapt("DELETE FROM vendor_prices WHERE id=?"), (vid,))
+        conn.commit()
+        # bust vendor forecast cache
+        for k in list(_FORECAST_CACHE.keys()):
+            if len(k)==3 and k[2]=="vendor":
+                _FORECAST_CACHE.pop(k,None)
+    finally:
+        conn.close()
+    return {"ok": True}
 
 def _get_commodities_data():
     """Inner fetch without JSONResponse wrapper. ponytail: avoids JSONResponse subscript bug that broke /api/analytics 500."""
@@ -292,9 +374,13 @@ def _get_commodities_data():
     """)
     rows = cursor.fetchall()
     conn.close()
-    return {
-        "commodities": [
-            {
+    commodities=[]
+    for row in rows:
+        name=row[0]
+        price=row[2]
+        w=piece_weight(name)
+        est=per_piece_estimate(name, price)
+        commodities.append({
                 "name": row[0],
                 "category": row[1],
                 "latest_price": row[2],
@@ -306,10 +392,11 @@ def _get_commodities_data():
                 "coverage": row[7],
                 "last_updated": row[8],
                 "data_points": row[9],
-            }
-            for row in rows
-        ]
-    }
+                "piece_weight_kg": w,
+                "per_piece_estimate": est,
+                "per_piece_label": "est." if est is not None and name.lower().strip()!="eggs (medium)" else None,
+        })
+    return {"commodities": commodities}
 
 
 @app.get("/api/commodities")
@@ -367,9 +454,9 @@ def get_historical_prices(commodity: str, days: int = Query(30, ge=7, le=365)):
         raise HTTPException(status_code=404, detail=str(e))
 
 @app.get("/api/forecast/{commodity}")
-async def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30)):
+async def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30), source: str = Query("da", pattern="^(da|vendor)$")):
     """Generates ARIMA forecasts. ponytail: to_thread so 0.1 CPU not block health/analytics."""
-    key = (commodity.lower().strip(), horizon)
+    key = (commodity.lower().strip(), horizon, source)
     cached = _FORECAST_CACHE.get(key)
     if cached:
         ts, res = cached
@@ -377,7 +464,9 @@ async def get_price_forecast(commodity: str, horizon: int = Query(7, ge=1, le=30
         if _time.time() - ts < ttl:
             return res
     try:
-        result = await asyncio.to_thread(generate_arima_forecast, commodity, horizon)
+        result = await asyncio.to_thread(generate_arima_forecast, commodity, horizon, source)
+        if isinstance(result, dict) and "source" not in result:
+            result["source"]=source
         _FORECAST_CACHE[key] = (_time.time(), result)
         return result
     except Exception as e:

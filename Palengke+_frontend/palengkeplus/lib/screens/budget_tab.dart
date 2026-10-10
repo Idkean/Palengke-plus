@@ -61,6 +61,7 @@ class _BudgetTabState extends State<BudgetTab> {
   final budgetController = TextEditingController();
   final quantities = <String, double>{};
   bool restoring = true;
+  bool usePiece = false;
 
   @override
   void initState() {
@@ -155,7 +156,8 @@ class _BudgetTabState extends State<BudgetTab> {
   );
 
   Widget _budgetContent(List<dynamic> commodities) {
-    final total = estimateBasketTotal(quantities, commodities);
+    List<dynamic> pricedCommodities = commodities.map((c){ if(c is! Map) return c; final pKg = double.tryParse(c['latest_price'].toString()) ?? 0; final est = perPieceEst(c['name'].toString(), pKg); if(usePiece && est!=null) return {...c, 'latest_price': est, 'unit':'per piece'}; return c; }).toList();
+    final total = estimateBasketTotal(quantities, pricedCommodities);
     final budgetText = budgetController.text.trim();
     final budget = double.tryParse(budgetText);
     final hasBudget = budget != null && budget.isFinite && budget > 0;
@@ -341,9 +343,10 @@ class _BudgetTabState extends State<BudgetTab> {
             ],
           ),
         ),
+        SegmentedButton<bool>(segments: const [ButtonSegment(value:false, label: Text('per kg')), ButtonSegment(value:true, label: Text('per piece'))], selected:{usePiece}, onSelectionChanged:(s)=> setState(()=> usePiece=s.first)),
         const SizedBox(height: 12),
         const Text(
-          'Estimated from the latest official DA reference prices. Actual market prices may differ.',
+          'Estimated from the latest official DA reference prices. Actual market prices may differ. per piece = est. via weight map (1 pc).',
           style: TextStyle(color: Colors.blueGrey, fontSize: 12, height: 1.35),
         ),
         const SizedBox(height: 18),
@@ -416,12 +419,22 @@ class _BudgetTabState extends State<BudgetTab> {
     );
   }
 
+  double _effectivePrice(Map item){
+    final pKg = double.tryParse(item['latest_price'].toString()) ?? 0;
+    final est = perPieceEst(item['name'].toString(), pKg);
+    if(usePiece && est != null) return est;
+    return pKg;
+  }
+  String _unitFor(Map item){
+    final est = perPieceEst(item['name'].toString(), item['latest_price']);
+    if(usePiece && est != null) return 'per piece';
+    return item['unit']?.toString() ?? 'per kg';
+  }
   Widget _basketItem(Map item) {
     final name = item['name'].toString();
     final quantity = quantities[name] ?? 0;
-    final step = _stepFor(item);
-    final rawUnit = item['unit']?.toString() ?? 'per kg';
-    final price = double.tryParse(item['latest_price'].toString()) ?? 0;
+    final rawUnit = _unitFor(item);
+    final price = _effectivePrice(item);
 
     return Card(
       elevation: 0,

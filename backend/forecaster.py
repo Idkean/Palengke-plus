@@ -8,6 +8,10 @@ from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 
 from database import DB_PATH, get_conn, _adapt
+try:
+    from piece_weights import PIECE_WEIGHT_KG
+except Exception:
+    PIECE_WEIGHT_KG = {}
 
 warnings.filterwarnings("ignore")
 
@@ -26,6 +30,35 @@ def get_commodity_series(commodity: str) -> pd.Series:
     if df.empty:
         raise ValueError(f"No price data found for {commodity}")
 
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.groupby('date')['price'].mean()
+    observed_count = len(df)
+    df = df.asfreq('D')
+    df = df.interpolate(method='linear')
+    df.attrs['observed_count'] = observed_count
+    return df
+
+def get_vendor_series(commodity: str) -> pd.Series:
+    """Loads vendor price series, normalized to per-kg for comparability."""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        _adapt("SELECT date, price, unit FROM vendor_prices WHERE commodity = ? ORDER BY date ASC"),
+        conn,
+        params=(commodity.lower().strip(),)
+    )
+    conn.close()
+    if df.empty:
+        raise ValueError(f"No vendor price data found for {commodity}")
+    def _norm(r):
+        u = str(r['unit']).lower().strip()
+        price = float(r['price'])
+        if 'piece' in u:
+            w = PIECE_WEIGHT_KG.get(commodity.lower().strip())
+            if w and w not in (0, 1.0):
+                return price / w
+            return price
+        return price
+    df['price'] = df.apply(_norm, axis=1)
     df['date'] = pd.to_datetime(df['date'])
     df = df.groupby('date')['price'].mean()
     observed_count = len(df)
@@ -144,9 +177,12 @@ def generate_baseline_forecast(series: pd.Series, commodity: str, horizon_days: 
         "forecast": forecast,
     }
 
-def generate_arima_forecast(commodity: str, horizon_days: int = 7) -> dict:
+def generate_arima_forecast(commodity: str, horizon_days: int = 7, source: str = "da") -> dict:
     """Fits ARIMA model and returns price predictions with 95% Confidence Intervals."""
-    series = get_commodity_series(commodity)
+    if source == "vendor":
+        series = get_vendor_series(commodity)
+    else:
+        series = get_commodity_series(commodity)
     # ponytail: cap 60 days on free tier; p95 still 90s on 0.1 CPU without this.
     # Fall back to last-value + RMSE margin instantly if ARIMA exceeds budget.
     import time as _t

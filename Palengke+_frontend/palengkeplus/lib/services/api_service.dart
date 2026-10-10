@@ -131,17 +131,45 @@ class ApiService {
     }
   }
 
+  Future<List<dynamic>> fetchVendorPrices({String? commodity}) async {
+    final q = commodity==null||commodity.trim().isEmpty ? '' : '?commodity=${Uri.encodeComponent(commodity)}';
+    final response = await http.get(Uri.parse('$baseUrl/vendor-prices$q')).timeout(const Duration(seconds: 30));
+    if (response.statusCode != 200) throw Exception('Failed to load vendor prices (${response.statusCode})');
+    final data = json.decode(response.body);
+    return data['vendor_prices'] as List<dynamic>;
+  }
+  Future<Map<String,dynamic>> submitVendorPrice({required String commodity, required double price, required String unit, required String vendorName, required String market, String notes=''}) async {
+    final response = await http.post(Uri.parse('$baseUrl/vendor-prices'), headers: {'Content-Type':'application/json'}, body: json.encode({'commodity':commodity,'price':price,'unit':unit,'vendor_name':vendorName,'market':market,'notes':notes})).timeout(const Duration(seconds:30));
+    if (response.statusCode!=200 && response.statusCode!=201) throw Exception('Submit failed (${response.statusCode}): ${response.body}');
+    return json.decode(response.body) as Map<String,dynamic>;
+  }
+  Future<void> deleteVendorPrice(int id, {String? username}) async {
+    final q = username==null||username.isEmpty ? '' : '?username=${Uri.encodeComponent(username)}';
+    final response = await http.delete(Uri.parse('$baseUrl/vendor-prices/$id$q')).timeout(const Duration(seconds:30));
+    if (response.statusCode!=200) throw Exception('Delete failed (${response.statusCode})');
+  }
+  Future<Map<String,dynamic>> vendorRegister({required String username, required String password, required String market}) async {
+    final response = await http.post(Uri.parse('$baseUrl/vendor-auth/register'), headers:{'Content-Type':'application/json'}, body: json.encode({'username':username,'password':password,'market':market})).timeout(const Duration(seconds:30));
+    if (response.statusCode!=200) throw Exception('Register failed (${response.statusCode}): ${response.body}');
+    return json.decode(response.body) as Map<String,dynamic>;
+  }
+  Future<Map<String,dynamic>> vendorLogin({required String username, required String password}) async {
+    final response = await http.post(Uri.parse('$baseUrl/vendor-auth/login'), headers:{'Content-Type':'application/json'}, body: json.encode({'username':username,'password':password,'market':''})).timeout(const Duration(seconds:30));
+    if (response.statusCode!=200) throw Exception('Login failed (${response.statusCode}): ${response.body}');
+    return json.decode(response.body) as Map<String,dynamic>;
+  }
   Future<Map<String, dynamic>> fetchForecast(
     String commodity, {
     int horizon = 7,
+    String source = 'da',
   }) async {
     final encoded = Uri.encodeComponent(commodity);
     return _withCache(
       key:
-          '${_cacheVersion}_forecast_${commodity.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}_$horizon',
+          '${_cacheVersion}_forecast_${commodity.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '_')}_${horizon}_$source',
       request: () async {
         final response = await http
-            .get(Uri.parse('$baseUrl/forecast/$encoded?horizon=$horizon'))
+            .get(Uri.parse('$baseUrl/forecast/$encoded?horizon=$horizon&source=$source'))
             .timeout(const Duration(seconds: 90));
         if (response.statusCode != 200) {
           throw Exception(

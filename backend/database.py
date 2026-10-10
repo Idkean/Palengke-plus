@@ -57,6 +57,15 @@ def init_db():
                     notes TEXT DEFAULT ''
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vendor_users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
             # backfill columns if upgrading from older schema
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='prices'")
             cols = {r[0] for r in cur.fetchall()}
@@ -89,6 +98,15 @@ def init_db():
                     vendor_name TEXT NOT NULL,
                     market TEXT NOT NULL,
                     notes TEXT DEFAULT ''
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS vendor_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 )
             """)
             columns = {row[1] for row in cur.execute("PRAGMA table_info(prices)")}

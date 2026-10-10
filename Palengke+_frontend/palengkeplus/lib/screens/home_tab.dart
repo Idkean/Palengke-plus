@@ -428,7 +428,7 @@ class _HomeTabState extends State<HomeTab> {
               ),
               const SizedBox(width: 8),
               SizedBox(
-                width: 78,
+                width: 110,
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -436,13 +436,14 @@ class _HomeTabState extends State<HomeTab> {
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        '₱${formatPrice(item['latest_price'])}',
+                        '₱${formatPrice(item['latest_price'])} / kg',
                         style: const TextStyle(
                           fontWeight: FontWeight.w800,
-                          fontSize: 17,
+                          fontSize: 14,
                         ),
                       ),
                     ),
+                    if(item['per_piece_estimate']!=null) FittedBox(fit: BoxFit.scaleDown, child: Text(perPieceLabel(item['name'].toString(), item['latest_price']), style: const TextStyle(color: Colors.blueGrey, fontSize: 10, fontWeight: FontWeight.w600))),
                     const SizedBox(height: 3),
                     _deltaChip(delta),
                     if (forecast)

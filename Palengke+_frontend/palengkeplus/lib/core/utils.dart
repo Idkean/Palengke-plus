@@ -61,6 +61,47 @@ String unitLabel(String unit, {bool short=false}) {
   return short ? 'kg' : 'per kg';
 }
 bool isPieceUnit(String unit) => unit.toLowerCase().contains('piece');
+const pieceWeightKg = <String,double>{
+  'well-milled rice': 1.0,
+  'regular milled rice': 1.0,
+  'premium 5% broken rice': 1.0,
+  'yellow corn': 0.25,
+  'ampalaya': 0.15,
+  'kamatis': 0.08,
+  'talong': 0.15,
+  'repolyo': 0.80,
+  'sitaw': 0.02,
+  'kalabasa': 1.20,
+  'carrots': 0.06,
+  'red onion': 0.06,
+  'white onion': 0.06,
+  'bawang': 0.04,
+  'luya': 0.05,
+  'pork liempo': 0.20,
+  'pork kasim': 0.20,
+  'beef rump': 0.20,
+  'chicken (whole)': 1.40,
+  'eggs (medium)': 0.06,
+  'bangus': 0.50,
+  'tilapia': 0.35,
+  'galunggong': 0.08,
+};
+double? pieceWeight(String name) => pieceWeightKg[name.toLowerCase().trim()];
+double? perPieceEst(String name, dynamic perKg) {
+  final w = pieceWeight(name);
+  if (w==null) return null;
+  final p = parseNumber(perKg);
+  if (p<=0) return null;
+  if (name.toLowerCase().trim()=='eggs (medium)') return double.parse(p.toStringAsFixed(2));
+  return double.parse((p*w).toStringAsFixed(2));
+}
+bool isPieceAvailable(String name) => pieceWeightKg.containsKey(name.toLowerCase().trim());
+String perPieceLabel(String name, dynamic perKg) {
+  final est = perPieceEst(name, perKg);
+  if (est==null) return '';
+  if (name.toLowerCase().trim()=='eggs (medium)') return '₱${formatPrice(est)} / pc';
+  return '₱${formatPrice(est)} / pc est.';
+}
 String priceWithUnit(dynamic price, dynamic unit) => '₱${formatPrice(price)} / ${unitLabel(unit?.toString() ?? 'per kg', short: true)}';
 
 

@@ -15,6 +15,7 @@ class ForecastScreen extends StatefulWidget {
 class _ForecastScreenState extends State<ForecastScreen> {
   late Future<Map<String, dynamic>> future;
   List<dynamic> _history = [];
+  String source='da'; // da | vendor
   @override
   void initState() {
     super.initState();
@@ -29,7 +30,7 @@ class _ForecastScreenState extends State<ForecastScreen> {
       _history = history;
     } catch (_) { history = _history; }
     try {
-      forecast = await widget.api.fetchForecast(widget.commodity).timeout(const Duration(seconds: 90));
+      forecast = await widget.api.fetchForecast(widget.commodity, source: source).timeout(const Duration(seconds: 90));
     } catch (e) {
       forecastErr = e.toString().replaceAll(RegExp(r'^Exception:\s*'), '');
     }
@@ -110,7 +111,7 @@ class _ForecastScreenState extends State<ForecastScreen> {
       backgroundColor: navy,
       foregroundColor: Colors.white,
     ),
-    body: FutureBuilder<Map<String, dynamic>>(
+    body: Column(children:[Padding(padding: const EdgeInsets.fromLTRB(12,8,12,0), child: SegmentedButton<String>(segments: const [ButtonSegment(value:'da', label: Text('DA forecast')), ButtonSegment(value:'vendor', label: Text('Vendor'))], selected:{source}, onSelectionChanged:(s)=> setState(()=>{source=s.first, future=_load()}))), Expanded(child: FutureBuilder<Map<String, dynamic>>(
       future: future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
